@@ -1,4 +1,4 @@
-import { OrderItem, Store, Menu } from "./types";
+import { OrderItem, Store, Menu, Category, BillResponse } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_GO_API_URL;
 
@@ -17,16 +17,38 @@ export const fetchAllStores = async (): Promise<Store[]> => {
 };
 
 export const fetchMenusByStoreId = async (storeId: string, accessToken: string): Promise<Menu[]> => {
-    // Menggunakan endpoint baru yang otentik dan spesifik
     return fetcher(`/pos/stores/by-id/${storeId}/menus`, accessToken);
+};
+
+// Fungsi diperbarui untuk menggunakan endpoint `/pos/stores/by-id/:id/categories`
+export const fetchCategoriesByStoreId = async (storeId: string, accessToken: string): Promise<Category[]> => {
+    return fetcher(`/pos/stores/by-id/${storeId}/categories`, accessToken);
+};
+
+export const calculateBill = async (storeId: string, items: OrderItem[], accessToken: string): Promise<BillResponse> => {
+    const res = await fetch(`${API_URL}/orders/calculate-bill`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ storeId, items }),
+    });
+    if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || 'Failed to calculate bill');
+    }
+    return res.json();
 };
 
 export const createAndPayOrder = async (
     storeId: string,
     items: OrderItem[],
+    customerName: string,
+    tableNumber: string,
+    mode: string,
     paymentMethod: string,
     cashReceived: number,
-    customerName: string,
     accessToken: string,
 ) => {
     const res = await fetch(`${API_URL}/orders`, {
@@ -38,7 +60,8 @@ export const createAndPayOrder = async (
         body: JSON.stringify({
             storeId,
             customerName,
-            mode: 'DINE_IN',
+            tableNumber,
+            mode,
             items,
             paymentMethod,
             cashReceived,

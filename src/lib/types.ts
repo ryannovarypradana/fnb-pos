@@ -76,3 +76,12 @@ export interface OrderItem {
     menuId: string;
     quantity: number;
 }
+
+// Antarmuka baru untuk respons kalkulasi tagihan
+export interface BillResponse {
+    subtotal: number;
+    taxAmount: number;
+    finalAmount: number;
+    roundingAmount: number;
+    grandTotal: number;
+}
