@@ -106,12 +106,10 @@ export default function PosDashboard() {
         try {
             const items = orderState.items.map(item => ({ menuId: item.menu.id, quantity: item.quantity }));
             const order = await createOrder(
-                {
-                    store_id: selectedStoreId,
-                    user_id: session.user.id,
-                    table_number: tableNumber || undefined,
-                    items: items,
-                },
+                selectedStoreId,
+                items,
+                session.user.id,
+                tableNumber || undefined,
                 session.accessToken
             );
             setCreatedOrder(order);
@@ -124,7 +122,7 @@ export default function PosDashboard() {
     const handleConfirmPayment = async () => {
         if (!createdOrder || !session?.accessToken) return;
 
-        if (paymentMethod === 'CASH' && cashReceived < (bill?.grandTotal || 0)) {
+        if (paymentMethod === 'CASH' && cashReceived < (bill?.total_amount || 0)) {
             toast.error("Uang tunai tidak mencukupi.");
             return;
         }
@@ -291,11 +289,11 @@ export default function PosDashboard() {
                         <>
                             <div className="flex justify-between items-center text-sm">
                                 <span className="text-gray-600">Pajak (10%)</span>
-                                <span>{formatRupiah(bill.taxAmount)}</span>
+                                <span>{formatRupiah(bill.tax)}</span>
                             </div>
                             <div className="flex justify-between items-center text-lg font-bold text-blue-700">
                                 <span>Total</span>
-                                <span>{formatRupiah(bill.grandTotal)}</span>
+                                <span>{formatRupiah(bill.total_amount)}</span>
                             </div>
                         </>
                     )}
@@ -341,10 +339,10 @@ export default function PosDashboard() {
                                         className="w-full px-3 py-2 border rounded-md"
                                         placeholder="0"
                                     />
-                                    {cashReceived > (bill?.grandTotal || 0) && (
+                                    {cashReceived > (bill?.total_amount || 0) && (
                                         <div className="mt-2 flex justify-between text-green-600 font-bold">
                                             <span>Kembalian:</span>
-                                            <span>{formatRupiah(cashReceived - (bill?.grandTotal || 0))}</span>
+                                            <span>{formatRupiah(cashReceived - (bill?.total_amount || 0))}</span>
                                         </div>
                                     )}
                                 </div>
@@ -359,7 +357,7 @@ export default function PosDashboard() {
                                 </button>
                                 <button
                                     onClick={handleConfirmPayment}
-                                    disabled={isPaymentProcessing || (paymentMethod === 'CASH' && cashReceived < (bill?.grandTotal || 0))}
+                                    disabled={isPaymentProcessing || (paymentMethod === 'CASH' && cashReceived < (bill?.total_amount || 0))}
                                     className="flex-1 bg-green-600 text-white py-3 rounded-md hover:bg-green-700 font-bold shadow-lg disabled:bg-gray-400"
                                 >
                                     {isPaymentProcessing ? 'Memproses...' : 'Konfirmasi Bayar'}

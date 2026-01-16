@@ -3,6 +3,7 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import { User as CustomUser } from '@/lib/types';
 import { jwtDecode } from "jwt-decode";
 import { User } from "next-auth";
+import { NextRequest, NextResponse } from "next/server";
 
 interface JWTDecoded {
     user_id: string;
@@ -56,12 +57,15 @@ export const authOptions: NextAuthOptions = {
                     if (res.ok && data?.token) {
                         const decodedToken = jwtDecode<JWTDecoded>(data.token);
 
+                        // Prioritize store_id from response body user object if available, fall back to decoded token
+                        const storeId = data.user?.store_id || decodedToken.store_id;
+
                         const user: User = {
                             id: decodedToken.user_id,
                             email: decodedToken.email,
                             name: decodedToken.email,
                             role: decodedToken.role as CustomUser['role'],
-                            storeId: decodedToken.store_id || undefined,
+                            storeId: storeId || undefined,
                             companyId: decodedToken.company_id || undefined,
                             accessToken: data.token,
                         };
@@ -99,4 +103,11 @@ export const authOptions: NextAuthOptions = {
 };
 
 const handler = NextAuth(authOptions);
-export { handler as GET, handler as POST };
+
+export const GET = async (req: NextRequest, ctx: any) => {
+    return (handler as any)(req, ctx);
+};
+
+export const POST = async (req: NextRequest, ctx: any) => {
+    return (handler as any)(req, ctx);
+};

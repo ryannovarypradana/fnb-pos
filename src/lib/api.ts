@@ -20,21 +20,7 @@ export const fetchMenusByStoreId = async (storeId: string, accessToken: string):
     return fetcher(`/api/v1/pos/stores/by-id/${storeId}/menus`, accessToken);
 };
 
-export const createOrder = async (payload: any, accessToken: string): Promise<any> => {
-    const res = await fetch(`${API_URL}/api/v1/orders`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.error || 'Failed to create order');
-    }
-    return res.json();
-};
+
 
 export const confirmPayment = async (payload: any, accessToken: string): Promise<any> => {
     const res = await fetch(`${API_URL}/api/v1/orders/confirm-payment`, {
@@ -64,7 +50,14 @@ export const calculateBill = async (storeId: string, items: OrderItem[], accessT
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ storeId, items }),
+        // Map menuId -> product_id for backend
+        body: JSON.stringify({
+            store_id: storeId,
+            items: items.map(item => ({
+                product_id: item.menuId,
+                quantity: item.quantity
+            }))
+        }),
     });
     if (!res.ok) {
         const errorData = await res.json();
@@ -73,35 +66,58 @@ export const calculateBill = async (storeId: string, items: OrderItem[], accessT
     return res.json();
 };
 
-export const createAndPayOrder = async (
+// Helper to create order
+export const createOrder = async (
     storeId: string,
     items: OrderItem[],
-    customerName: string,
-    tableNumber: string,
-    mode: string,
-    paymentMethod: string,
-    cashReceived: number,
-    accessToken: string,
-) => {
-    const res = await fetch(`${API_URL}/orders`, {
+    userId: string, // Changed from implicit to explicit user_id if needed, or rely on token? Doc says user_id is in body.
+    tableNumber: string | undefined,
+    accessToken: string
+): Promise<any> => {
+    const payload = {
+        store_id: storeId,
+        user_id: userId,
+        table_number: tableNumber,
+        items: items.map(item => ({
+            product_id: item.menuId,
+            quantity: item.quantity
+        }))
+    };
+
+    const res = await fetch(`${API_URL}/api/v1/orders`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({
-            storeId,
-            customerName,
-            tableNumber,
-            mode,
-            items,
-            paymentMethod,
-            cashReceived,
-        }),
+        body: JSON.stringify(payload),
     });
     if (!res.ok) {
         const errorData = await res.json();
         throw new Error(errorData.error || 'Failed to create order');
     }
     return res.json();
+};
+
+export const createAndPayOrder = async (
+    storeId: string,
+    items: OrderItem[],
+    customerName: string, // Not used in CREATE ORDER per doc but maybe for local?
+    tableNumber: string,
+    mode: string, // 'DINE_IN' etc? Not in doc, doc has table_number.
+    paymentMethod: string,
+    cashReceived: number, // Not used in CREATE, but in payment flow? Doc has separate payment confirmation.
+    accessToken: string,
+    userId: string // Need userId
+) => {
+    // 1. Create Order
+    const order = await createOrder(storeId, items, userId, tableNumber, accessToken);
+
+    // 2. Confirm Payment
+    const paymentPayload = {
+        order_code: order.order_code,
+        payment_method: paymentMethod
+    };
+
+    return confirmPayment(paymentPayload, accessToken);
 };

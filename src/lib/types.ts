@@ -78,12 +78,12 @@ export interface OrderItem {
 }
 
 // Antarmuka baru untuk respons kalkulasi tagihan
+// Antarmuka baru untuk respons kalkulasi tagihan
 export interface BillResponse {
     subtotal: number;
-    taxAmount: number;
-    finalAmount: number;
-    roundingAmount: number;
-    grandTotal: number;
+    tax: number;
+    discount: number;
+    total_amount: number;
 }
 
 export interface Order {
