@@ -85,3 +85,10 @@ export interface BillResponse {
     roundingAmount: number;
     grandTotal: number;
 }
+
+export interface Order {
+    id?: string;
+    order_code: string;
+    total_amount?: number;
+    status?: string;
+}

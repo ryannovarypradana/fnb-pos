@@ -3,9 +3,9 @@
 import { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { RootState } from '@/redux/store';
-import { fetchMenusByStoreId, createAndPayOrder, fetchCategoriesByStoreId, calculateBill } from '@/lib/api';
+import { fetchMenusByStoreId, createOrder, confirmPayment, fetchCategoriesByStoreId, calculateBill } from '@/lib/api';
 import { addItem, removeItem, clearOrder, updateQuantity } from '@/redux/slices/orderSlice';
-import { Menu, Category, BillResponse } from '@/lib/types';
+import { Menu, Category, BillResponse, Order } from '@/lib/types';
 import { useSession } from 'next-auth/react';
 import { toast } from 'react-toastify';
 
@@ -25,6 +25,8 @@ export default function PosDashboard() {
     const [paymentMethod, setPaymentMethod] = useState('CASH');
     const [cashReceived, setCashReceived] = useState(0);
     const [bill, setBill] = useState<BillResponse | null>(null);
+    const [createdOrder, setCreatedOrder] = useState<Order | null>(null);
+    const [isPaymentProcessing, setIsPaymentProcessing] = useState(false);
 
     useEffect(() => {
         async function loadData() {
@@ -33,10 +35,11 @@ export default function PosDashboard() {
             try {
                 setLoading(true);
                 const fetchedCategories = await fetchCategoriesByStoreId(selectedStoreId, session.accessToken);
-                const fetchedMenus = await fetchMenusByStoreId(selectedStoreId, session.accessToken);
+                const fetchedMenuResponse = await fetchMenusByStoreId(selectedStoreId, session.accessToken);
 
                 setCategories(fetchedCategories);
-                setMenus(fetchedMenus);
+                // Handle new response structure { menus: [], ... }
+                setMenus(fetchedMenuResponse.menus || []);
                 if (fetchedCategories.length > 0) {
                     setSelectedCategory(fetchedCategories[0].id);
                 }
@@ -57,6 +60,7 @@ export default function PosDashboard() {
     const handleCalculateBill = async () => {
         if (!orderState.items.length) {
             toast.warn("Keranjang kosong.");
+            setBill(null);
             return;
         }
 
@@ -71,9 +75,21 @@ export default function PosDashboard() {
         }
     };
 
-    const handleCreateOrder = async () => {
-        if (!orderState.items.length || !selectedStoreId || !session?.accessToken) {
-            toast.warn("Keranjang kosong atau toko belum dipilih.");
+    // Recalculate bill whenever items change
+    useEffect(() => {
+        if (orderState.items.length > 0) {
+            const debounce = setTimeout(() => {
+                handleCalculateBill();
+            }, 500);
+            return () => clearTimeout(debounce);
+        } else {
+            setBill(null);
+        }
+    }, [orderState.items, selectedStoreId]);
+
+    const handlePlaceOrder = async () => {
+        if (!orderState.items.length || !selectedStoreId || !session?.accessToken || !session?.user) {
+            toast.warn("Keranjang kosong, toko belum dipilih, atau sesi habis.");
             return;
         }
 
@@ -87,31 +103,54 @@ export default function PosDashboard() {
             return;
         }
 
+        try {
+            const items = orderState.items.map(item => ({ menuId: item.menu.id, quantity: item.quantity }));
+            const order = await createOrder(
+                {
+                    store_id: selectedStoreId,
+                    user_id: session.user.id,
+                    table_number: tableNumber || undefined,
+                    items: items,
+                },
+                session.accessToken
+            );
+            setCreatedOrder(order);
+            toast.success(`Order ${order.order_code} dibuat. Silakan lanjut ke pembayaran.`);
+        } catch (error: any) {
+            toast.error(`Gagal membuat pesanan: ${error.message}`);
+        }
+    };
+
+    const handleConfirmPayment = async () => {
+        if (!createdOrder || !session?.accessToken) return;
+
         if (paymentMethod === 'CASH' && cashReceived < (bill?.grandTotal || 0)) {
             toast.error("Uang tunai tidak mencukupi.");
             return;
         }
 
         try {
-            const items = orderState.items.map(item => ({ menuId: item.menu.id, quantity: item.quantity }));
-            const order = await createAndPayOrder(
-                selectedStoreId,
-                items,
-                customerName,
-                tableNumber,
-                orderMode,
-                paymentMethod,
-                cashReceived,
-                session.accessToken,
+            setIsPaymentProcessing(true);
+            await confirmPayment(
+                {
+                    order_code: createdOrder.order_code,
+                    payment_method: paymentMethod,
+                },
+                session.accessToken
             );
-            toast.success(`Pesanan ${order.orderCode} berhasil dibuat!`);
+            toast.success("Pembayaran berhasil dikonfirmasi!");
+
+            // Reset Flow
             dispatch(clearOrder());
             setCustomerName('');
             setTableNumber('');
             setBill(null);
+            setCreatedOrder(null);
             setCashReceived(0);
         } catch (error: any) {
-            toast.error(`Gagal membuat pesanan: ${error.message}`);
+            toast.error(`Gagal konfirmasi pembayaran: ${error.message}`);
+        } finally {
+            setIsPaymentProcessing(false);
         }
     };
 
@@ -120,21 +159,21 @@ export default function PosDashboard() {
     };
 
     if (loading) {
-        return <div className="text-center p-8">Memuat menu...</div>;
+        return <div className="flex justify-center items-center h-screen text-xl font-semibold text-gray-600">Memuat menu...</div>;
     }
 
     return (
-        <div className="flex h-screen bg-gray-100 p-4 gap-4">
-            {/* Kategori Menu */}
-            <div className="w-1/5 bg-white rounded-lg shadow-md p-4 overflow-y-auto flex flex-col">
-                <h2 className="text-xl font-bold mb-4">Kategori</h2>
+        <div className="flex flex-col lg:flex-row h-screen bg-gray-100 p-4 gap-4 overflow-hidden">
+            {/* Kategori Menu - Desktop: Left, Mobile: Top (Horizontal Scroll) */}
+            <div className="w-full lg:w-1/5 bg-white rounded-lg shadow-md p-4 flex lg:flex-col gap-2 overflow-x-auto lg:overflow-y-auto">
+                <h2 className="hidden lg:block text-xl font-bold mb-4">Kategori</h2>
                 {categories.map(category => (
                     <button
                         key={category.id}
                         onClick={() => setSelectedCategory(category.id)}
-                        className={`p-3 rounded-lg mb-2 text-left transition-colors duration-200 ${selectedCategory === category.id
-                                ? 'bg-blue-500 text-white shadow-lg'
-                                : 'bg-gray-200 hover:bg-gray-300'
+                        className={`p-3 rounded-lg text-sm lg:text-base whitespace-nowrap lg:whitespace-normal transition-colors duration-200 text-left ${selectedCategory === category.id
+                            ? 'bg-blue-600 text-white shadow-md'
+                            : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
                             }`}
                     >
                         {category.name}
@@ -145,192 +184,193 @@ export default function PosDashboard() {
             {/* Daftar Menu */}
             <div className="flex-1 p-4 overflow-y-auto bg-white rounded-lg shadow-md">
                 <h2 className="text-xl font-bold mb-4">Daftar Menu</h2>
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
                     {filteredMenus.map(menu => (
                         <div
                             key={menu.id}
-                            className="bg-white border rounded-lg shadow-sm cursor-pointer hover:shadow-lg transition-shadow p-4"
+                            className="bg-white border hover:border-blue-500 rounded-lg shadow-sm cursor-pointer hover:shadow-lg transition-all p-4 flex flex-col justify-between h-full"
                             onClick={() => dispatch(addItem(menu))}>
-                            <h3 className="font-semibold text-lg">{menu.name}</h3>
-                            <p className="text-sm text-gray-500">{formatRupiah(menu.price)}</p>
+                            <div>
+                                {menu.imageUrl && (
+                                    <div className="w-full h-32 bg-gray-200 rounded-md mb-2 overflow-hidden">
+                                        <img src={menu.imageUrl} alt={menu.name} className="w-full h-full object-cover" />
+                                    </div>
+                                )}
+                                <h3 className="font-semibold text-sm lg:text-base mb-1">{menu.name}</h3>
+                                {/* <p className="text-xs text-gray-500 mb-2 line-clamp-2">{menu.description}</p> */}
+                            </div>
+                            <p className="font-bold text-blue-600">{formatRupiah(menu.price)}</p>
                         </div>
                     ))}
                 </div>
             </div>
 
             {/* Ringkasan Pesanan & Pembayaran */}
-            <div className="w-1/3 bg-white p-4 shadow-lg rounded-lg flex flex-col">
-                <h2 className="text-xl font-bold mb-4">Ringkasan Pesanan</h2>
+            <div className="w-full lg:w-1/3 bg-white p-4 shadow-lg rounded-lg flex flex-col h-1/2 lg:h-full">
+                <h2 className="text-xl font-bold mb-4">
+                    {createdOrder ? `Pembayaran: ${createdOrder.order_code}` : 'Order Baru'}
+                </h2>
 
-                {/* Info Pelanggan */}
-                <div className="mb-4 space-y-2">
-                    <div>
-                        <label htmlFor="orderMode" className="block text-sm font-medium text-gray-700">Mode Pesanan</label>
-                        <div className="mt-1 flex items-center gap-4">
-                            <label className="inline-flex items-center">
-                                <input
-                                    type="radio"
-                                    name="orderMode"
-                                    value="DINE_IN"
-                                    checked={orderMode === 'DINE_IN'}
-                                    onChange={() => setOrderMode('DINE_IN')}
-                                    className="form-radio text-blue-600"
-                                />
-                                <span className="ml-2 text-gray-700">Dine-In</span>
-                            </label>
-                            <label className="inline-flex items-center">
-                                <input
-                                    type="radio"
-                                    name="orderMode"
-                                    value="TAKEAWAY"
-                                    checked={orderMode === 'TAKEAWAY'}
-                                    onChange={() => setOrderMode('TAKEAWAY')}
-                                    className="form-radio text-blue-600"
-                                />
-                                <span className="ml-2 text-gray-700">Takeaway</span>
-                            </label>
+                {/* Input Fields - Only when not yet created order */}
+                {!createdOrder && (
+                    <div className="mb-4 space-y-3">
+                        <div className="flex gap-4 p-1 bg-gray-100 rounded-lg">
+                            <button
+                                className={`flex-1 py-1 rounded-md text-sm font-medium transition-all ${orderMode === 'DINE_IN' ? 'bg-white shadow text-blue-600' : 'text-gray-500'}`}
+                                onClick={() => setOrderMode('DINE_IN')}
+                            >
+                                Dine-In
+                            </button>
+                            <button
+                                className={`flex-1 py-1 rounded-md text-sm font-medium transition-all ${orderMode === 'TAKEAWAY' ? 'bg-white shadow text-blue-600' : 'text-gray-500'}`}
+                                onClick={() => setOrderMode('TAKEAWAY')}
+                            >
+                                Takeaway
+                            </button>
                         </div>
+
+                        {orderMode === 'TAKEAWAY' ? (
+                            <div>
+                                <input
+                                    type="text"
+                                    value={customerName}
+                                    onChange={(e) => setCustomerName(e.target.value)}
+                                    className="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500 outline-none"
+                                    placeholder="Nama Pelanggan *"
+                                />
+                            </div>
+                        ) : (
+                            <div>
+                                <input
+                                    type="text"
+                                    value={tableNumber}
+                                    onChange={(e) => setTableNumber(e.target.value)}
+                                    className="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500 outline-none"
+                                    placeholder="Nomor Meja *"
+                                />
+                            </div>
+                        )}
                     </div>
-                    {orderMode === 'TAKEAWAY' && (
-                        <div>
-                            <label htmlFor="customerName" className="block text-sm text-gray-700">Nama Pelanggan <span className="text-red-500">*</span></label>
-                            <input
-                                type="text"
-                                id="customerName"
-                                value={customerName}
-                                onChange={(e) => setCustomerName(e.target.value)}
-                                className="w-full px-3 py-2 border rounded-md"
-                                placeholder="Masukkan nama pelanggan"
-                                required
-                            />
-                        </div>
-                    )}
-                    {orderMode === 'DINE_IN' && (
-                        <div>
-                            <label htmlFor="tableNumber" className="block text-sm text-gray-700">Nomor Meja <span className="text-red-500">*</span></label>
-                            <input
-                                type="text"
-                                id="tableNumber"
-                                value={tableNumber}
-                                onChange={(e) => setTableNumber(e.target.value)}
-                                className="w-full px-3 py-2 border rounded-md"
-                                placeholder="Masukkan nomor meja"
-                                required
-                            />
-                        </div>
-                    )}
-                </div>
+                )}
 
-                {/* Daftar Item */}
-                <div className="flex-1 overflow-y-auto border-t py-4">
+                {/* Shopping Cart List */}
+                <div className="flex-1 overflow-y-auto border-t border-b py-2 space-y-2">
                     {orderState.items.length === 0 ? (
-                        <p className="text-gray-500 text-center italic">Keranjang kosong</p>
+                        <div className="h-full flex flex-col items-center justify-center text-gray-400">
+                            <p>Keranjang kosong</p>
+                        </div>
                     ) : (
                         orderState.items.map(item => (
-                            <div key={item.menu.id} className="flex justify-between items-center mb-2 p-2 bg-gray-50 rounded-md">
+                            <div key={item.menu.id} className="flex justify-between items-center p-2 hover:bg-gray-50 rounded-md">
                                 <div className="flex-1">
-                                    <p className="font-semibold">{item.menu.name}</p>
-                                    <p className="text-sm text-gray-500">{formatRupiah(item.menu.price)}</p>
+                                    <p className="font-medium text-sm">{item.menu.name}</p>
+                                    <p className="text-xs text-gray-500">{formatRupiah(item.menu.price)} x {item.quantity}</p>
                                 </div>
-                                <div className="flex items-center space-x-2">
-                                    <button onClick={() => dispatch(updateQuantity({ menuId: item.menu.id, quantity: item.quantity - 1 }))} className="text-gray-500">-</button>
-                                    <input
-                                        type="number"
-                                        value={item.quantity}
-                                        onChange={(e) => dispatch(updateQuantity({ menuId: item.menu.id, quantity: parseInt(e.target.value) || 0 }))}
-                                        className="w-12 text-center border rounded-md"
-                                        min="0"
-                                    />
-                                    <button onClick={() => dispatch(updateQuantity({ menuId: item.menu.id, quantity: item.quantity + 1 }))} className="text-gray-500">+</button>
-                                    <button onClick={() => dispatch(removeItem(item.menu.id))} className="text-red-500">Hapus</button>
+                                {!createdOrder && (
+                                    <div className="flex items-center space-x-2">
+                                        <button onClick={() => dispatch(updateQuantity({ menuId: item.menu.id, quantity: item.quantity - 1 }))} className="w-6 h-6 flex items-center justify-center bg-gray-200 rounded text-gray-600 hover:bg-gray-300">-</button>
+                                        <span className="w-4 text-center text-sm">{item.quantity}</span>
+                                        <button onClick={() => dispatch(updateQuantity({ menuId: item.menu.id, quantity: item.quantity + 1 }))} className="w-6 h-6 flex items-center justify-center bg-gray-200 rounded text-gray-600 hover:bg-gray-300">+</button>
+                                    </div>
+                                )}
+                                <div className="font-semibold text-sm ml-2">
+                                    {formatRupiah(item.menu.price * item.quantity)}
                                 </div>
                             </div>
                         ))
                     )}
                 </div>
 
-                {/* Ringkasan Tagihan & Pembayaran */}
-                <div className="mt-4 border-t pt-4 space-y-2">
-                    <div className="flex justify-between font-bold text-lg">
-                        <span>Subtotal:</span>
-                        <span>{formatRupiah(orderState.subtotal)}</span>
+                {/* Footer Actions */}
+                <div className="mt-4 pt-2 space-y-3">
+                    <div className="flex justify-between items-center">
+                        <span className="text-gray-600">Subtotal</span>
+                        <span className="font-medium">{formatRupiah(bill?.subtotal || orderState.subtotal)}</span>
                     </div>
-
                     {bill && (
-                        <div className="border-t mt-4 pt-4 space-y-2">
-                            <div className="flex justify-between">
-                                <span className="text-gray-600">Pajak:</span>
-                                <span className="text-gray-600">{formatRupiah(bill.taxAmount)}</span>
+                        <>
+                            <div className="flex justify-between items-center text-sm">
+                                <span className="text-gray-600">Pajak (10%)</span>
+                                <span>{formatRupiah(bill.taxAmount)}</span>
                             </div>
-                            <div className="flex justify-between font-bold text-xl text-green-600">
-                                <span>Grand Total:</span>
+                            <div className="flex justify-between items-center text-lg font-bold text-blue-700">
+                                <span>Total</span>
                                 <span>{formatRupiah(bill.grandTotal)}</span>
                             </div>
+                        </>
+                    )}
 
-                            <div className="space-y-2 mt-4">
-                                <div>
-                                    <label htmlFor="paymentMethod" className="block text-sm text-gray-700">Metode Pembayaran</label>
-                                    <select
-                                        id="paymentMethod"
-                                        value={paymentMethod}
-                                        onChange={(e) => setPaymentMethod(e.target.value)}
-                                        className="w-full px-3 py-2 border rounded-md"
-                                    >
-                                        <option value="CASH">CASH</option>
-                                        <option value="DEBIT">DEBIT</option>
-                                        <option value="QRIS">QRIS</option>
-                                        <option value="EWALLET">EWALLET</option>
-                                    </select>
-                                </div>
-                                {paymentMethod === 'CASH' && (
-                                    <div>
-                                        <label htmlFor="cashReceived" className="block text-sm text-gray-700">Uang Diterima</label>
-                                        <input
-                                            type="number"
-                                            id="cashReceived"
-                                            value={cashReceived}
-                                            onChange={(e) => setCashReceived(parseFloat(e.target.value))}
-                                            className="w-full px-3 py-2 border rounded-md"
-                                            min="0"
-                                        />
-                                    </div>
-                                )}
-                                {paymentMethod === 'CASH' && cashReceived > bill.grandTotal && (
-                                    <div className="flex justify-between text-lg font-bold text-blue-600">
-                                        <span>Kembalian:</span>
-                                        <span>{formatRupiah(cashReceived - bill.grandTotal)}</span>
-                                    </div>
-                                )}
-                            </div>
-
+                    {!createdOrder ? (
+                        <div className="flex gap-2">
                             <button
-                                onClick={handleCreateOrder}
-                                className="w-full bg-green-500 text-white py-3 rounded-md text-lg mt-4 hover:bg-green-600 disabled:bg-green-300"
-                                disabled={paymentMethod === 'CASH' && cashReceived < bill.grandTotal}
+                                onClick={() => dispatch(clearOrder())}
+                                className="px-4 py-3 bg-red-100 text-red-600 rounded-md hover:bg-red-200 transition-colors"
                             >
-                                Proses Pembayaran
+                                Reset
+                            </button>
+                            <button
+                                onClick={handlePlaceOrder}
+                                className="flex-1 bg-blue-600 text-white py-3 rounded-md hover:bg-blue-700 font-semibold shadow-lg transition-transform active:scale-95 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                                disabled={orderState.items.length === 0 || !bill}
+                            >
+                                Buat Pesanan
                             </button>
                         </div>
-                    )}
+                    ) : (
+                        <div className="space-y-3 animate-fade-in-up">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Metode Pembayaran</label>
+                                <select
+                                    value={paymentMethod}
+                                    onChange={(e) => setPaymentMethod(e.target.value)}
+                                    className="w-full px-3 py-2 border rounded-md bg-white"
+                                >
+                                    <option value="CASH">Tunai (Cash)</option>
+                                    <option value="QRIS">QRIS</option>
+                                    <option value="DEBIT">Debit Card</option>
+                                </select>
+                            </div>
 
-                    {!bill && (
-                        <button
-                            onClick={handleCalculateBill}
-                            className="w-full bg-blue-500 text-white py-3 rounded-md text-lg mt-4 hover:bg-blue-600 disabled:bg-blue-300"
-                            disabled={orderState.items.length === 0}
-                        >
-                            Hitung Tagihan
-                        </button>
-                    )}
+                            {paymentMethod === 'CASH' && (
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Uang Diterima</label>
+                                    <input
+                                        type="number"
+                                        value={cashReceived}
+                                        onChange={(e) => setCashReceived(parseFloat(e.target.value))}
+                                        className="w-full px-3 py-2 border rounded-md"
+                                        placeholder="0"
+                                    />
+                                    {cashReceived > (bill?.grandTotal || 0) && (
+                                        <div className="mt-2 flex justify-between text-green-600 font-bold">
+                                            <span>Kembalian:</span>
+                                            <span>{formatRupiah(cashReceived - (bill?.grandTotal || 0))}</span>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
 
-                    <button
-                        onClick={() => dispatch(clearOrder())}
-                        className="w-full bg-gray-500 text-white py-3 rounded-md text-lg mt-2 hover:bg-gray-600"
-                    >
-                        Hapus Pesanan
-                    </button>
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => setCreatedOrder(null)}
+                                    className="px-4 py-2 text-gray-600 border rounded-md hover:bg-gray-50"
+                                >
+                                    Batal Bayar
+                                </button>
+                                <button
+                                    onClick={handleConfirmPayment}
+                                    disabled={isPaymentProcessing || (paymentMethod === 'CASH' && cashReceived < (bill?.grandTotal || 0))}
+                                    className="flex-1 bg-green-600 text-white py-3 rounded-md hover:bg-green-700 font-bold shadow-lg disabled:bg-gray-400"
+                                >
+                                    {isPaymentProcessing ? 'Memproses...' : 'Konfirmasi Bayar'}
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         </div>
     );
 }
+
+// Add simple animation styles if needed or use existing tailwind
